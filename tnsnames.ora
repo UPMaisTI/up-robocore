@@ -1,0 +1,59 @@
+UPMAIS =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.1.251)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = UPMAIS)
+    )
+  )
+  
+ORACLE =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.7.4)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = ORACLE)
+    )
+  )
+
+ORATESTE =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.7.11)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = ORATESTE)
+    )
+  )
+
+ORAREL =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.7.12)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = orarel)
+    )
+  )
+ORAGED =
+  (DESCRIPTION =
+     (ADDRESS_LIST =
+     (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.7.55)(PORT = 1521))
+   )
+   (CONNECT_DATA =
+      (SERVICE_NAME = oraged)
+    )
+  )
+UPLIDERA =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 186.214.8.66)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = ORACLE)
+    )
+  )

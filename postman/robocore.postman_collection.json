@@ -1,0 +1,184 @@
+{
+  "info": {
+    "name": "UP RoboCore",
+    "_postman_id": "1b2c3d4e-0000-1111-2222-333344445555",
+    "description": "APIs do RoboCore (robots, health) + whatsapp-spam (CRUD de sessões/targets).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Live",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health/live"
+          }
+        },
+        {
+          "name": "Health Ready",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health/ready"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Robots",
+      "item": [
+        {
+          "name": "Listar Robôs",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/robots"
+          }
+        },
+        {
+          "name": "Revarrer Robôs (scan)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/scan"
+          }
+        },
+        {
+          "name": "Start Robô (:name)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/:name/start"
+          }
+        },
+        {
+          "name": "Status Robô (:name)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/robots/:name/status"
+          }
+        },
+        {
+          "name": "Stop Robô (:name)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/:name/stop"
+          }
+        },
+        {
+          "name": "Reload Robô (:name)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/:name/reload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Robô: whatsapp-spam (controle)",
+      "item": [
+        {
+          "name": "Start whatsapp-spam",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/whatsapp-spam/start"
+          }
+        },
+        {
+          "name": "Status whatsapp-spam",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/robots/whatsapp-spam/status"
+          }
+        },
+        {
+          "name": "Stop whatsapp-spam",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/whatsapp-spam/stop"
+          }
+        },
+        {
+          "name": "Reload whatsapp-spam",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/robots/whatsapp-spam/reload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "whatsapp-spam (DB Config)",
+      "item": [
+        {
+          "name": "Listar sessões (DB)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/whatsapp-spam/sessions"
+          }
+        },
+        {
+          "name": "Criar sessão (DB)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sessionId\": \"ROBOCELL3\",\n  \"enabled\": true,\n  \"numOrigem\": 3,\n  \"mode\": \"simple\",\n  \"intervalMs\": 5000,\n  \"maxPerDay\": 250,\n  \"sendNormal\": true\n}"
+            },
+            "url": "{{baseUrl}}/whatsapp-spam/sessions"
+          }
+        },
+        {
+          "name": "Alterar sessão (DB) (:id)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intervalMs\": 3000,\n  \"mode\": \"fast\",\n  \"enabled\": true\n}"
+            },
+            "url": "{{baseUrl}}/whatsapp-spam/sessions/:id"
+          }
+        },
+        {
+          "name": "Remover sessão (DB) (:id)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/whatsapp-spam/sessions/:id"
+          }
+        },
+        {
+          "name": "Listar targets (fazendinha) (:id)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/whatsapp-spam/sessions/:id/targets"
+          }
+        },
+        {
+          "name": "Upsert target (fazendinha) (:id)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"chatId\": \"1203...@g.us\",\n  \"intervalMs\": 900000\n}"
+            },
+            "url": "{{baseUrl}}/whatsapp-spam/sessions/:id/targets"
+          }
+        },
+        {
+          "name": "Remover target (fazendinha) (:id, :chatId)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/whatsapp-spam/sessions/:id/targets/:chatId"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    }
+  ]
+}
