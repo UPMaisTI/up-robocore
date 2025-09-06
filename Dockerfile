@@ -2,20 +2,14 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip libaio1 tzdata && \
+    ca-certificates curl unzip tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # timezone real
 ENV TZ=America/Sao_Paulo
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Oracle Instant Client Basic Lite 21.13
-ENV OCI_VER_DIR=instantclient_21_13
-RUN curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/211300/instantclient-basiclite-linux.x64-21.13.0.0.0dbru.zip -o /tmp/oci.zip && \
-    mkdir -p /opt/oracle && unzip -qo /tmp/oci.zip -d /opt/oracle && rm -f /tmp/oci.zip && \
-    echo "/opt/oracle/${OCI_VER_DIR}" > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
-
-ENV LD_LIBRARY_PATH=/opt/oracle/${OCI_VER_DIR}
+# Usando Thin mode do node-oracledb (sem Instant Client)
 ENV TNS_ADMIN=/app/tns
 RUN mkdir -p /app/tns
 
