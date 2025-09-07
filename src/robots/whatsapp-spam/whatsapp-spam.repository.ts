@@ -64,29 +64,56 @@ export class WhatsSpamRepository {
     anexo: string | null;
   } | null> {
     const assigned = !!useAssigned;
-    const sel = await this.db.query(
-      assigned
-        ? `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
-             FROM sankhya.envia_whats w
-            WHERE LENGTH(DESTINO) in (12,13)
-              AND w.data_envio IS NULL
-              AND w.erro IS NULL
-              AND w.numorigem = :num
-            ORDER BY w.data_criacao ASC
-            FETCH FIRST 1 ROW ONLY`
-        : `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
-             FROM sankhya.envia_whats w
-            WHERE LENGTH(DESTINO) in (12,13)
-              AND w.data_envio IS NULL
-              AND w.erro IS NULL
-              AND w.numorigem IS NULL
-            ORDER BY w.data_criacao ASC
-            FETCH FIRST 1 ROW ONLY`,
-      assigned ? { num: numOrigem } : undefined,
-    );
-    const row = this.rows(sel)[0];
-    if (!row) return null;
-    if (!assigned) {
+    if (assigned) {
+      const token = `CLAIMED:${process.pid}:${Date.now()}:${Math.random()
+        .toString(16)
+        .slice(2)}`;
+      const upd = await this.db.execute(
+        `UPDATE sankhya.envia_whats w
+            SET w.erro = :token
+          WHERE w.COD_ENVIA_WHATS = (
+                  SELECT COD_ENVIA_WHATS
+                    FROM sankhya.envia_whats
+                   WHERE LENGTH(DESTINO) in (12,13)
+                     AND data_envio IS NULL
+                     AND erro IS NULL
+                     AND numorigem = :num
+                   ORDER BY data_criacao ASC
+                   FETCH FIRST 1 ROW ONLY
+                )
+            AND w.data_envio IS NULL
+            AND w.erro IS NULL`,
+        { token, num: numOrigem },
+      );
+      const rowsAffected = upd?.rowsAffected ?? upd?.rows?.length ?? 0;
+      if (!rowsAffected) return null;
+      const sel2 = await this.db.query(
+        `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+           FROM sankhya.envia_whats
+          WHERE erro = :token`,
+        { token },
+      );
+      const row2 = this.rows(sel2)[0];
+      if (!row2) return null;
+      return {
+        cod: Number(row2.COD_ENVIA_WHATS),
+        destino: String(row2.DESTINO),
+        mensagem: String(row2.MENSAGEM || ''),
+        anexo: row2.ANEXO ? String(row2.ANEXO) : null,
+      };
+    } else {
+      const sel = await this.db.query(
+        `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+           FROM sankhya.envia_whats w
+          WHERE LENGTH(DESTINO) in (12,13)
+            AND w.data_envio IS NULL
+            AND w.erro IS NULL
+            AND w.numorigem IS NULL
+          ORDER BY w.data_criacao ASC
+          FETCH FIRST 1 ROW ONLY`,
+      );
+      const row = this.rows(sel)[0];
+      if (!row) return null;
       const upd = await this.db.execute(
         `UPDATE sankhya.envia_whats
             SET NUMORIGEM = :num
@@ -95,13 +122,13 @@ export class WhatsSpamRepository {
       );
       const rowsAffected = upd?.rowsAffected ?? upd?.rows?.length ?? 0;
       if (!rowsAffected) return null;
+      return {
+        cod: Number(row.COD_ENVIA_WHATS),
+        destino: String(row.DESTINO),
+        mensagem: String(row.MENSAGEM || ''),
+        anexo: row.ANEXO ? String(row.ANEXO) : null,
+      };
     }
-    return {
-      cod: Number(row.COD_ENVIA_WHATS),
-      destino: String(row.DESTINO),
-      mensagem: String(row.MENSAGEM || ''),
-      anexo: row.ANEXO ? String(row.ANEXO) : null,
-    };
   }
 
   async finalizeQueueItem(

@@ -193,15 +193,21 @@ function computeTickMs(r: SessionRuntime) {
 function startSendingLoop(r: SessionRuntime, ctx: RobotContext) {
   if (r.timer) clearInterval(r.timer);
   const tickMs = computeTickMs(r);
-  r.timer = setInterval(
-    () =>
-      tick(r, ctx).catch((e) => {
+  const scheduleNext = () => {
+    r.timer = setTimeout(async () => {
+      try {
+        await tick(r, ctx);
+      } catch (e) {
         r.state = 'error';
         r.lastError = String(e);
         ctx.log(`[${r.cfg.sessionId}] erro no tick`, String(e));
-      }),
-    tickMs,
-  );
+      } finally {
+        // agenda o próximo somente após concluir este tick
+        scheduleNext();
+      }
+    }, tickMs);
+  };
+  scheduleNext();
   ctx.log(`[${r.cfg.sessionId}] loop iniciado a cada ${tickMs}ms`);
 }
 
