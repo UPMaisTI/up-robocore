@@ -1,5 +1,6 @@
 import type { Robot, RobotContext } from '../types';
 import { WhatsSpamRepository, SessionCfg } from './whatsapp-spam.repository';
+import { promises as fs } from 'fs';
 
 type SessionRuntime = {
   cfg: SessionCfg;
@@ -303,6 +304,83 @@ function guessMime(name: string) {
   }
 }
 
+function isImageMime(m: string) {
+  return /^image\//i.test(m || '');
+}
+
+function toPosix(p: string) {
+  return (p || '').replace(/[\\]+/g, '/');
+}
+
+// Mapeia caminhos do Windows (C:\\SistemasUP\\...) para Linux (/mnt/whats/...) ou compartilhamento SMB (//host/c$/SistemasUP/...)
+function mapWinPath(raw: string): string {
+  let s = toPosix((raw || '').trim());
+  if (!s) return s;
+  // Se já for uma URL http(s), retorna como está
+  if (isHttpUrl(s)) return s;
+  // Normaliza prefixo de drive
+  if (/^c:\/\//i.test(s)) s = s.replace(/^c:\/\//i, 'C:/');
+  if (/^c:\//i.test(s)) s = s.replace(/^c:\//i, 'C:/');
+  // Atalho: se for UNC/SMB já
+  if (/^\/\//.test(s)) return s;
+
+  // Preferência por compartilhamento de rede se variável estiver definida
+  const smbPrefix = String(process.env.WHATS_WIN_SHARE_PREFIX || '').trim();
+  if (smbPrefix) {
+    // Extrai sufixo após C:/SistemasUP/
+    const m = s.match(/^C:\/SistemasUP\/(.*)$/i);
+    if (m && m[1]) return `${toPosix(smbPrefix).replace(/\/$/, '')}/${m[1]}`;
+  }
+
+  // Mapeamento fixo para bind-mount em Linux
+  const low = s.toLowerCase();
+  const mappings: Array<{ from: string; to: string }> = [
+    {
+      from: 'c:/sistemasup/gestaoupmais/files/campanhas',
+      to: '/mnt/whats/gestao/campanhas',
+    },
+    { from: 'c:/sistemasup/gestaoupmais/temp', to: '/mnt/whats/gestao/temp' },
+    { from: 'c:/sistemasup/boletosup/boletos', to: '/mnt/whats/boletos' },
+    { from: 'c:/sistemasup/whatscampanha', to: '/mnt/whats/campanhas' },
+    {
+      from: 'c:/sistemasup/processosautomaticosup',
+      to: '/mnt/whats/processos',
+    },
+  ];
+  for (const m of mappings) {
+    if (low.startsWith(m.from)) {
+      return m.to + s.slice(m.from.length);
+    }
+  }
+  // Caso não bata com nada, retorna como veio (deixa decisao para fs)
+  return s;
+}
+
+async function fileToBase64(
+  filePath: string,
+): Promise<{ filename: string; mime: string; dataUrl: string } | null> {
+  try {
+    const p = mapWinPath(filePath);
+    const filename = (toPosix(p).split('/').pop() || 'file').trim();
+    const mime = guessMime(filename);
+    // Em HTTP, tenta baixar e converter
+    if (isHttpUrl(p)) {
+      const res = await fetch(p);
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const arr = await res.arrayBuffer();
+      const buf = Buffer.from(arr);
+      const base64 = buf.toString('base64');
+      return { filename, mime, dataUrl: `data:${mime};base64,${base64}` };
+    }
+    // Arquivo local
+    const buf = await fs.readFile(p);
+    const base64 = Buffer.from(buf).toString('base64');
+    return { filename, mime, dataUrl: `data:${mime};base64,${base64}` };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function sendMessageViaApi(
   sessionId: string,
   toOrChatId: string,
@@ -320,35 +398,64 @@ async function sendMessageViaApi(
       chatId = resolved;
     }
     const body = normalizeText(text);
-    if (body.trim()) {
-      await apiPost('/messages/send', {
-        sessionId,
-        chatId,
-        type: 'text',
-        body,
-      });
-      ctx.log(
-        `[${sessionId}] texto enviado para ${chatId} (len=${body.length})`,
-      );
-    } else {
-      ctx.log(`[${sessionId}] texto vazio; nada a enviar para ${chatId}`);
-    }
+
     const annexStr = typeof anexos === 'string' ? anexos : '';
-    if (annexStr) {
-      const parts = annexStr
-        .split(';')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      for (const p of parts) {
-        if (!isHttpUrl(p)) continue;
-        const filename = p.split('/').pop() || 'file';
+    const annexList = annexStr
+      ? annexStr
+          .split(';')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    // Converte anexos para base64 (um a um)
+    const mediaList: { filename: string; mime: string; dataUrl: string }[] = [];
+    for (const raw of annexList) {
+      const m = await fileToBase64(raw);
+      if (!m) {
+        ctx.log(`[${sessionId}] anexo ignorado (inacessível): ${raw}`);
+        continue;
+      }
+      mediaList.push(m);
+    }
+
+    if (!mediaList.length) {
+      // Sem anexos: envia apenas texto (se houver)
+      if (body.trim()) {
         await apiPost('/messages/send', {
           sessionId,
           chatId,
-          type: 'media',
-          media: { url: p, mimetype: guessMime(filename), filename },
+          type: 'text',
+          body,
         });
-        ctx.log(`[${sessionId}] anexo enviado para ${chatId}: ${filename}`);
+        ctx.log(
+          `[${sessionId}] texto enviado para ${chatId} (len=${body.length})`,
+        );
+      } else {
+        ctx.log(`[${sessionId}] texto vazio; nada a enviar para ${chatId}`);
+      }
+    } else {
+      // Com anexos: envia o primeiro com a legenda (body) e os demais sem legenda
+      const [first, ...rest] = mediaList;
+      const firstPayload: any = {
+        sessionId,
+        chatId,
+        type: 'document',
+        caption: body?.trim() ? body : undefined,
+        media: { base64: first.dataUrl, filename: first.filename },
+      };
+      await apiPost('/messages/send', firstPayload);
+      ctx.log(
+        `[${sessionId}] anexo enviado para ${chatId}: ${first.filename} (com legenda=${!!(body && body.trim())})`,
+      );
+      for (const m of rest) {
+        const payload: any = {
+          sessionId,
+          chatId,
+          type: 'document',
+          media: { base64: m.dataUrl, filename: m.filename },
+        };
+        await apiPost('/messages/send', payload);
+        ctx.log(`[${sessionId}] anexo enviado para ${chatId}: ${m.filename}`);
       }
     }
     return true;
