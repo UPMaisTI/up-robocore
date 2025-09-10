@@ -95,42 +95,65 @@ function normalizePhone(raw: string): string | null {
 async function tick(ctx: RobotContext) {
   if (!runtime?.repo || !runtime?.spamRepo) return;
   runtime.state = 'running';
-  // Claim um registro pendente
-  const item = await runtime.repo.claimOne();
-  if (!item) {
+
+  const batchSize = Number(process.env.WHATS_PRECHECK_BATCH || 500);
+  const concurrency = Math.max(
+    1,
+    Math.min(100, Number(process.env.WHATS_PRECHECK_CONCURRENCY || 20)),
+  );
+
+  const items = await runtime.repo.fetchBatch(batchSize);
+  if (!items.length) {
     runtime.lastEvent = 'fila vazia';
     return;
   }
-  const cod = item.cod;
-  const phoneRaw = item.destino;
-  const normalized = normalizePhone(phoneRaw);
-  if (!normalized) {
-    await runtime.repo.finalizeInvalidNumber(cod, item.token);
-    runtime.lastEvent = `INVALID_NUMBER cod=${cod}`;
-    return;
-  }
 
-  // Lista sessões e tenta resolver chatId em alguma READY
   const sessions: SessionCfg[] = await runtime.spamRepo.listSessions();
-  let chatOk = false;
+  const readySessions: string[] = [];
   for (const s of sessions) {
     if (!s.enabled) continue;
     const ready = await isSessionReady(s.sessionId, ctx);
-    if (!ready) continue;
-    const id = await resolveChatId(s.sessionId, normalized, ctx);
-    if (id) {
-      chatOk = true;
-      break;
+    if (ready) readySessions.push(s.sessionId);
+  }
+
+  let invalidCount = 0;
+  let noChatCount = 0;
+  let okCount = 0;
+
+  const processOne = async (item: { cod: number; destino: string }) => {
+    const cod = item.cod;
+    const normalized = normalizePhone(item.destino);
+    if (!normalized) {
+      await runtime!.repo!.markInvalidNumber(cod);
+      invalidCount++;
+      return;
     }
+    if (!readySessions.length) {
+      // Sem sessões READY no momento: só validamos formato; deixa para depois resolver chatId
+      okCount++;
+      return;
+    }
+    let resolved = false;
+    for (const sid of readySessions) {
+      const id = await resolveChatId(sid, normalized, ctx);
+      if (id) {
+        resolved = true;
+        break;
+      }
+    }
+    if (resolved) okCount++;
+    else {
+      await runtime!.repo!.markNoChatId(cod);
+      noChatCount++;
+    }
+  };
+
+  for (let i = 0; i < items.length; i += concurrency) {
+    const chunk = items.slice(i, i + concurrency);
+    await Promise.all(chunk.map((it) => processOne(it)));
   }
-  if (chatOk) {
-    // Libera para processamento normal pelo spam
-    await runtime.repo.release(cod, item.token);
-    runtime.lastEvent = `OK cod=${cod}`;
-  } else {
-    await runtime.repo.finalizeNoChatId(cod, item.token);
-    runtime.lastEvent = `NO_CHAT_ID cod=${cod}`;
-  }
+
+  runtime.lastEvent = `batch=${items.length} ok=${okCount} invalid=${invalidCount} noChat=${noChatCount}`;
 }
 
 function scheduleLoop(ctx: RobotContext) {
@@ -179,4 +202,3 @@ const robot: Robot = {
 };
 
 export default robot;
-
