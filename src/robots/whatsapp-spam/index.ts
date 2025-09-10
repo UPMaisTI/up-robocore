@@ -393,7 +393,12 @@ async function sendMessageViaApi(
     let chatId = treatAsChatId ? toOrChatId : null;
     if (!chatId) {
       const phone = onlyDigits(toOrChatId);
-      const resolved = await resolveChatId(sessionId, phone, ctx);
+      let resolved = await resolveChatId(sessionId, phone, ctx);
+      if (!resolved && phone.length === 11) {
+        // Se vier sem DDI (55) mas com DDD+numero, tenta com 55
+        const prefixed = `55${phone}`;
+        resolved = await resolveChatId(sessionId, prefixed, ctx);
+      }
       if (!resolved) return false;
       chatId = resolved;
     }

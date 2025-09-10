@@ -1,5 +1,4 @@
-import { DatabaseService } from "src/database/database.service";
-
+import { DatabaseService } from 'src/database/database.service';
 
 export type SessionCfg = {
   sessionId: string;
@@ -34,7 +33,10 @@ export class WhatsSpamRepository {
       intervalMs: Number(r.INTERVAL_MS || 5000),
       maxPerDay: Number(r.MAX_PER_DAY || 250),
       sendNormal: String(r.SEND_NORMAL || 'Y') === 'Y',
-      useAssigned: this.useAssignedFor(String(r.SESSION_ID), Number(r.NUM_ORIGEM)),
+      useAssigned: this.useAssignedFor(
+        String(r.SESSION_ID),
+        Number(r.NUM_ORIGEM),
+      ),
     }));
   }
 
@@ -64,70 +66,111 @@ export class WhatsSpamRepository {
     anexo: string | null;
   } | null> {
     const assigned = !!useAssigned;
+    const maxAttempts = 30;
     if (assigned) {
-      const token = `CLAIMED:${process.pid}:${Date.now()}:${Math.random()
-        .toString(16)
-        .slice(2)}`;
-      const upd = await this.db.execute(
-        `UPDATE sankhya.envia_whats w
-            SET w.erro = :token
-          WHERE w.COD_ENVIA_WHATS = (
-                  SELECT COD_ENVIA_WHATS
-                    FROM sankhya.envia_whats
-                   WHERE LENGTH(DESTINO) in (12,13)
-                     AND data_envio IS NULL
-                     AND erro IS NULL
-                     AND numorigem = :num
-                   ORDER BY data_criacao ASC
-                   FETCH FIRST 1 ROW ONLY
-                )
-            AND w.data_envio IS NULL
-            AND w.erro IS NULL`,
-        { token, num: numOrigem },
-      );
-      const rowsAffected = upd?.rowsAffected ?? upd?.rows?.length ?? 0;
-      if (!rowsAffected) return null;
-      const sel2 = await this.db.query(
-        `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
-           FROM sankhya.envia_whats
-          WHERE erro = :token`,
-        { token },
-      );
-      const row2 = this.rows(sel2)[0];
-      if (!row2) return null;
-      return {
-        cod: Number(row2.COD_ENVIA_WHATS),
-        destino: String(row2.DESTINO),
-        mensagem: String(row2.MENSAGEM || ''),
-        anexo: row2.ANEXO ? String(row2.ANEXO) : null,
-      };
+      for (let i = 0; i < maxAttempts; i++) {
+        const token = `CLAIMED:${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+        const upd = await this.db.execute(
+          `UPDATE sankhya.envia_whats w
+              SET w.erro = :token
+            WHERE w.COD_ENVIA_WHATS = (
+                    SELECT COD_ENVIA_WHATS
+                      FROM sankhya.envia_whats
+                     WHERE data_envio IS NULL
+                       AND erro IS NULL
+                       AND numorigem = :num
+                     ORDER BY data_criacao ASC
+                     FETCH FIRST 1 ROW ONLY
+                  )
+              AND w.data_envio IS NULL
+              AND w.erro IS NULL`,
+          { token, num: numOrigem },
+        );
+        const rowsAffected = upd?.rowsAffected ?? upd?.rows?.length ?? 0;
+        if (!rowsAffected) return null;
+
+        const sel2 = await this.db.query(
+          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+             FROM sankhya.envia_whats
+            WHERE erro = :token`,
+          { token },
+        );
+        const row2 = this.rows(sel2)[0];
+        if (!row2) continue;
+
+        const normalized = this.normalizeDestino(String(row2.DESTINO));
+        if (!normalized) {
+          await this.db.execute(
+            `UPDATE sankhya.envia_whats
+                SET DATA_ENVIO = TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI'),
+                    ERRO = 'INVALID_NUMBER'
+              WHERE COD_ENVIA_WHATS = :cod AND erro = :token`,
+            { cod: row2.COD_ENVIA_WHATS, token },
+          );
+          continue;
+        }
+
+        return {
+          cod: Number(row2.COD_ENVIA_WHATS),
+          destino: normalized,
+          mensagem: String(row2.MENSAGEM || ''),
+          anexo: row2.ANEXO ? String(row2.ANEXO) : null,
+        };
+      }
+      return null;
     } else {
-      const sel = await this.db.query(
-        `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
-           FROM sankhya.envia_whats w
-          WHERE LENGTH(DESTINO) in (12,13)
-            AND w.data_envio IS NULL
-            AND w.erro IS NULL
-            AND w.numorigem IS NULL
-          ORDER BY w.data_criacao ASC
-          FETCH FIRST 1 ROW ONLY`,
-      );
-      const row = this.rows(sel)[0];
-      if (!row) return null;
-      const upd = await this.db.execute(
-        `UPDATE sankhya.envia_whats
-            SET NUMORIGEM = :num
-          WHERE COD_ENVIA_WHATS = :cod AND NUMORIGEM IS NULL`,
-        { num: numOrigem, cod: row.COD_ENVIA_WHATS },
-      );
-      const rowsAffected = upd?.rowsAffected ?? upd?.rows?.length ?? 0;
-      if (!rowsAffected) return null;
-      return {
-        cod: Number(row.COD_ENVIA_WHATS),
-        destino: String(row.DESTINO),
-        mensagem: String(row.MENSAGEM || ''),
-        anexo: row.ANEXO ? String(row.ANEXO) : null,
-      };
+      for (let i = 0; i < maxAttempts; i++) {
+        const sel = await this.db.query(
+          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+             FROM sankhya.envia_whats w
+            WHERE w.data_envio IS NULL
+              AND w.erro IS NULL
+              AND w.numorigem IS NULL
+            ORDER BY w.data_criacao ASC
+            FETCH FIRST 30 ROWS ONLY`,
+        );
+        const rows = this.rows(sel) as Array<any>;
+        if (!rows.length) return null;
+
+        let chosen: any | null = null;
+        let normalized: string | null = null;
+
+        for (const r of rows) {
+          const n = this.normalizeDestino(String(r.DESTINO));
+          if (!n) {
+            await this.db.execute(
+              `UPDATE sankhya.envia_whats
+                  SET DATA_ENVIO = TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI'),
+                      ERRO = 'INVALID_NUMBER'
+                WHERE COD_ENVIA_WHATS = :cod AND DATA_ENVIO IS NULL AND ERRO IS NULL`,
+              { cod: r.COD_ENVIA_WHATS },
+            );
+            continue;
+          }
+          const claim = await this.db.execute(
+            `UPDATE sankhya.envia_whats
+                SET NUMORIGEM = :num
+              WHERE COD_ENVIA_WHATS = :cod AND NUMORIGEM IS NULL AND DATA_ENVIO IS NULL AND ERRO IS NULL`,
+            { num: numOrigem, cod: r.COD_ENVIA_WHATS },
+          );
+          const ok = claim?.rowsAffected ?? claim?.rows?.length ?? 0;
+          if (ok) {
+            chosen = r;
+            normalized = n;
+            break;
+          }
+        }
+
+        if (chosen && normalized) {
+          return {
+            cod: Number(chosen.COD_ENVIA_WHATS),
+            destino: normalized,
+            mensagem: String(chosen.MENSAGEM || ''),
+            anexo: chosen.ANEXO ? String(chosen.ANEXO) : null,
+          };
+        }
+      }
+      return null;
     }
   }
 
@@ -145,6 +188,7 @@ export class WhatsSpamRepository {
       { erro: erro || '', num: numOrigem, cod },
     );
   }
+
   private useAssignedFor(sessionId: string, numOrigem: number): boolean {
     const bySession = String(process.env.WHATS_USE_ASSIGNED_SESSIONS || '')
       .split(',')
@@ -165,5 +209,27 @@ export class WhatsSpamRepository {
     );
     const row = this.rows(rs)[0];
     return row?.TEXTO || 'Deus te abençoe!';
+  }
+
+  private normalizeDestino(raw: string): string | null {
+    let d = String(raw || '').replace(/\D/g, '');
+    if (!d) return null;
+    if (d.startsWith('00')) d = d.replace(/^0+/, '');
+    if (d.length === 11 || d.length === 10) d = '55' + d;
+    if (
+      (d.length === 11 && d.startsWith('55')) ||
+      (d.length === 12 && !d.startsWith('55'))
+    )
+      d = '55' + d;
+    if (!(d.startsWith('55') && (d.length === 12 || d.length === 13)))
+      return null;
+    const local = d.slice(2);
+    if (this.allSame(local)) return null;
+    return d;
+  }
+
+  private allSame(s: string): boolean {
+    if (!s) return false;
+    return /^(\d)\1+$/.test(s);
   }
 }
