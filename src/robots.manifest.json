@@ -1,3 +1,4 @@
 {
-  "whatsapp-spam": { "enabled": true }
+  "whatsapp-spam": { "enabled": true },
+  "whatsapp-precheck": { "enabled": true }
 }
