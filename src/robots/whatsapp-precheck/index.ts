@@ -18,6 +18,21 @@ function baseUrl() {
   const raw = process.env.WHATS_API_BASE || 'http://localhost:3000';
   return raw.replace(/\/+$/, '');
 }
+
+// Controle de verbosidade de logs
+// WHATS_PRECHECK_LOG: 'silent' | 'summary' | 'verbose' (padrão: 'summary')
+function logMode(): 'silent' | 'summary' | 'verbose' {
+  const v = String(process.env.WHATS_PRECHECK_LOG || 'summary').toLowerCase();
+  if (v === 'silent' || v === 'verbose' || v === 'summary') return v as any;
+  return 'summary';
+}
+function isVerbose() {
+  return logMode() === 'verbose';
+}
+function shouldLogSummary() {
+  const m = logMode();
+  return m === 'summary' || m === 'verbose';
+}
 async function apiGet(path: string) {
   const url = `${baseUrl()}${path}`;
   const key = process.env.WHATS_API_KEY;
@@ -44,7 +59,8 @@ async function isSessionReady(sessionId: string, ctx: RobotContext) {
     const s = await apiGet(`/sessions/${encodeURIComponent(sessionId)}/status`);
     const ready =
       s && (s.status === 'READY' || (s.message === 'ok' && s.state === 'READY'));
-    if (!ready) ctx.log(`[whatsapp-precheck] nao READY: ${sessionId}`);
+    if (!ready && isVerbose())
+      ctx.log(`[whatsapp-precheck] nao READY: ${sessionId}`);
     return !!ready;
   } catch (e: any) {
     ctx.log(`[whatsapp-precheck] erro status ${sessionId}: ${String(e?.message || e)}`);
@@ -52,26 +68,68 @@ async function isSessionReady(sessionId: string, ctx: RobotContext) {
   }
 }
 
+type ResolveResult =
+  | { kind: 'ok'; id: string }
+  | { kind: 'not_found' }
+  | { kind: 'error'; error: string };
+
 async function resolveChatId(
   sessionId: string,
   phone: string,
   ctx: RobotContext,
-): Promise<string | null> {
+): Promise<ResolveResult> {
+  const url = `${baseUrl()}/messages/${encodeURIComponent(sessionId)}/resolve?phone=${encodeURIComponent(phone)}`;
+  const key = process.env.WHATS_API_KEY;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (key) headers['x-api-key'] = key;
+  let res: any;
+  let text = '';
   try {
-    const r = await apiGet(
-      `/messages/${encodeURIComponent(sessionId)}/resolve?phone=${encodeURIComponent(phone)}`,
-    );
-    const id = r?.chatId || r?.result?._serialized || r?.data?.id || null;
-    if (!id) ctx.log(`[whatsapp-precheck] sem chatId: ${phone} (sess=${sessionId})`);
-    return id;
+    res = await fetch(url, { method: 'GET', headers });
+    text = await res.text();
   } catch (e: any) {
-    ctx.log(
-      `[whatsapp-precheck] erro resolve ${phone} (sess=${sessionId}): ${String(
-        e?.message || e,
-      )}`,
-    );
-    return null;
+    const msg = String(e?.message || e);
+    if (isVerbose())
+      ctx.log(
+        `[whatsapp-precheck] resolve erro de rede ${phone} (sess=${sessionId}): ${msg}`,
+      );
+    return { kind: 'error', error: msg };
   }
+
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = null;
+  }
+
+  if (res.ok) {
+    const id = json?.chatId || json?.result?._serialized || json?.data?.id || null;
+    if (id) return { kind: 'ok', id };
+    if (isVerbose())
+      ctx.log(`[whatsapp-precheck] sem chatId: ${phone} (sess=${sessionId})`);
+    return { kind: 'not_found' };
+  }
+
+  const full = `HTTP ${res.status} ${res.statusText}: ${text}`;
+  if (res.status === 404) {
+    if (isVerbose())
+      ctx.log(`[whatsapp-precheck] resolve NOT_FOUND ${phone} (sess=${sessionId})`);
+    return { kind: 'not_found' };
+  }
+  if (
+    res.status === 400 &&
+    /Protocol error|Session closed|Target closed|Timeout/i.test(text)
+  ) {
+    if (isVerbose())
+      ctx.log(
+        `[whatsapp-precheck] resolve transitório ${phone} (sess=${sessionId}): ${full}`,
+      );
+    return { kind: 'error', error: full };
+  }
+  if (isVerbose())
+    ctx.log(`[whatsapp-precheck] resolve erro ${phone} (sess=${sessionId}): ${full}`);
+  return { kind: 'error', error: full };
 }
 
 function allSame(s: string): boolean {
@@ -134,17 +192,25 @@ async function tick(ctx: RobotContext) {
       return;
     }
     let resolved = false;
+    let confirmedNotFound = false;
     for (const sid of readySessions) {
-      const id = await resolveChatId(sid, normalized, ctx);
-      if (id) {
+      const rr = await resolveChatId(sid, normalized, ctx);
+      if (rr.kind === 'ok') {
         resolved = true;
         break;
+      } else if (rr.kind === 'not_found') {
+        confirmedNotFound = true;
+        break;
+      } else {
+        // erro transitório: tenta próxima sessão
       }
     }
     if (resolved) okCount++;
-    else {
+    else if (confirmedNotFound) {
       await runtime!.repo!.markNoChatId(cod);
       noChatCount++;
+    } else {
+      // Erros transitórios: não marca; deixa para reprocessar
     }
   };
 
@@ -154,6 +220,9 @@ async function tick(ctx: RobotContext) {
   }
 
   runtime.lastEvent = `batch=${items.length} ok=${okCount} invalid=${invalidCount} noChat=${noChatCount}`;
+  if (shouldLogSummary()) {
+    ctx.log(`[whatsapp-precheck] ${runtime.lastEvent}`);
+  }
 }
 
 function scheduleLoop(ctx: RobotContext) {
@@ -163,11 +232,15 @@ function scheduleLoop(ctx: RobotContext) {
     try {
       await tick(ctx);
     } catch (e: any) {
-      runtime!.state = 'error';
-      runtime!.lastError = String(e?.message || e);
-      ctx.log(`[whatsapp-precheck] erro:`, runtime!.lastError);
+      if (runtime) {
+        runtime.state = 'error';
+        runtime.lastError = String(e?.message || e);
+      }
+      ctx.log(`[whatsapp-precheck] erro:`, String(e?.message || e));
     } finally {
-      runtime!.loop = setTimeout(run, interval);
+      if (runtime && runtime.state !== 'stopped') {
+        runtime.loop = setTimeout(run, interval);
+      }
     }
   };
   runtime.loop = setTimeout(run, 1000);
