@@ -106,9 +106,31 @@ async function resolveChatId(
   if (res.ok) {
     const id = json?.chatId || json?.result?._serialized || json?.data?.id || null;
     if (id) return { kind: 'ok', id };
+
+    // Só consideramos NOT_FOUND quando a API sinaliza explicitamente
+    // que o número não possui WhatsApp (message = 'no_whatsapp') ou
+    // quando o texto de erro corresponde a isso. Qualquer outra
+    // resposta 200 sem chatId é tratada como erro transitório.
+    const message = String(json?.message ?? '').toLowerCase();
+    const errorMsg = String(json?.error ?? '').toLowerCase();
+    const noWhatsPattern = /no[_ ]?whatsapp|nao possui whatsapp|não possui whatsapp|no whatsapp/i;
+    const isNoWhatsapp = message === 'no_whatsapp' || noWhatsPattern.test(errorMsg);
+
+    if (isNoWhatsapp) {
+      if (isVerbose())
+        ctx.log(
+          `[whatsapp-precheck] confirmado sem WhatsApp: ${phone} (sess=${sessionId})`,
+        );
+      return { kind: 'not_found' };
+    }
+
+    // Qualquer 200 sem chatId e sem indicação explícita de no_whatsapp
+    // vira erro transitório para não marcar indevidamente na base.
     if (isVerbose())
-      ctx.log(`[whatsapp-precheck] sem chatId: ${phone} (sess=${sessionId})`);
-    return { kind: 'not_found' };
+      ctx.log(
+        `[whatsapp-precheck] verificação inconclusiva (200 sem chatId): ${phone} (sess=${sessionId}) -> ${text}`,
+      );
+    return { kind: 'error', error: text || '200 sem chatId' };
   }
 
   const full = `HTTP ${res.status} ${res.statusText}: ${text}`;
