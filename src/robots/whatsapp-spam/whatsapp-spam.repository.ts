@@ -64,6 +64,7 @@ export class WhatsSpamRepository {
     destino: string;
     mensagem: string;
     anexo: string | null;
+    prioridade: number | null;
   } | null> {
     const assigned = !!useAssigned;
     const maxAttempts = 30;
@@ -90,7 +91,7 @@ export class WhatsSpamRepository {
         if (!rowsAffected) return null;
 
         const sel2 = await this.db.query(
-          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO, PRIORIDADE
              FROM sankhya.envia_whats
             WHERE erro = :token`,
           { token },
@@ -115,13 +116,14 @@ export class WhatsSpamRepository {
           destino: normalized,
           mensagem: String(row2.MENSAGEM || ''),
           anexo: row2.ANEXO ? String(row2.ANEXO) : null,
+          prioridade: row2.PRIORIDADE != null ? Number(row2.PRIORIDADE) : null,
         };
       }
       return null;
     } else {
       for (let i = 0; i < maxAttempts; i++) {
         const sel = await this.db.query(
-          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO
+          `SELECT COD_ENVIA_WHATS, DESTINO, MENSAGEM, ANEXO, PRIORIDADE
              FROM sankhya.envia_whats w
             WHERE w.data_envio IS NULL
               AND w.erro IS NULL
@@ -167,6 +169,7 @@ export class WhatsSpamRepository {
             destino: normalized,
             mensagem: String(chosen.MENSAGEM || ''),
             anexo: chosen.ANEXO ? String(chosen.ANEXO) : null,
+            prioridade: chosen.PRIORIDADE != null ? Number(chosen.PRIORIDADE) : null,
           };
         }
       }
@@ -186,6 +189,13 @@ export class WhatsSpamRepository {
               NUMORIGEM = :num
         WHERE COD_ENVIA_WHATS = :cod`,
       { erro: erro || '', num: numOrigem, cod },
+    );
+  }
+
+  async setPrioridade(cod: number, prioridade: number): Promise<void> {
+    await this.db.execute(
+      `UPDATE sankhya.envia_whats SET prioridade = :p WHERE COD_ENVIA_WHATS = :cod`,
+      { p: prioridade, cod },
     );
   }
 
@@ -231,5 +241,34 @@ export class WhatsSpamRepository {
   private allSame(s: string): boolean {
     if (!s) return false;
     return /^(\d)\1+$/.test(s);
+  }
+
+  // Insere um e-mail para envio assíncrono (espelha mensagem do WhatsApp)
+  async inserirEmailParaEnvio(
+    usuario_destino: string,
+    descricao: string,
+    corpo_email: string,
+    copia: string = '',
+  ): Promise<{ success: boolean; message?: string }> {
+    const sql = `
+      INSERT INTO envia_email (usuario_origem, usuario_destino, copia, descricao, corpo_email)
+      VALUES (:usuario_origem, :usuario_destino, :copia, :descricao, :corpo_email)
+    `;
+
+    try {
+      await this.db.query(sql, {
+        usuario_origem: 'ad@upmais.com.br',
+        usuario_destino,
+        copia,
+        descricao,
+        corpo_email,
+      });
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        message: `Erro ao inserir e-mail para envio: ${error?.message || error}`,
+      };
+    }
   }
 }

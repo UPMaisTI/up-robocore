@@ -74,6 +74,36 @@ let runtime:
 
 let startRetryTimer: NodeJS.Timeout | null = null;
 
+function getEmailMirrorNums(): number[] {
+  const raw = String(process.env.WHATS_EMAIL_MIRROR_NUMS || '').trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s))
+    .filter((n) => !isNaN(n));
+}
+function getEmailMirrorTo(): string {
+  return String(process.env.WHATS_EMAIL_MIRROR_TO || 'maxyurisantos42@gmail.com').trim();
+}
+function getEmailMirrorCc(): string {
+  return String(process.env.WHATS_EMAIL_MIRROR_CC || '').trim();
+}
+function shouldMirrorEmail(numOrigem: number): boolean {
+  const nums = getEmailMirrorNums();
+  return nums.includes(Number(numOrigem));
+}
+
+function findFallbackSession(excludeSessionId: string): string | null {
+  if (!runtime) return null;
+  for (const [sid, r] of runtime.sessions.entries()) {
+    if (sid === excludeSessionId) continue;
+    if (r.cfg.sendNormal && r.state === 'ready') return sid;
+  }
+  return null;
+}
+
 const robot: Robot = {
   name: 'whatsapp-spam',
   async start(ctx: RobotContext) {
@@ -506,9 +536,94 @@ async function tick(r: SessionRuntime, ctx: RobotContext) {
   }
   const ready = await isSessionReady(r.cfg.sessionId, ctx);
   if (!ready) {
-    r.state = 'starting';
-    r.lastEvent = 'aguardando READY';
-    return;
+    // Specific sessions (useAssigned) should try fallback send even if offline
+    if (r.cfg.sendNormal && r.cfg.useAssigned && runtime?.repo) {
+      const msg = await runtime.repo.claimOneFromQueue(
+        r.cfg.numOrigem,
+        true,
+      );
+      if (!msg) {
+        r.state = 'starting';
+        r.lastEvent = 'aguardando READY';
+        return;
+      }
+      // Email mirror once per record using PRIORIDADE as marker
+      if (shouldMirrorEmail(r.cfg.numOrigem)) {
+        const alreadyMirrored = msg.prioridade === r.cfg.numOrigem;
+        if (!alreadyMirrored) {
+          const to = getEmailMirrorTo();
+          const cc = getEmailMirrorCc();
+          const assunto = `WhatsApp espelhado (num ${r.cfg.numOrigem}) - cod ${msg.cod}`;
+          const corpo = [
+            `Destino: ${msg.destino}`,
+            `Anexo(s): ${msg.anexo ? msg.anexo : 'nenhum'}`,
+            '',
+            'Mensagem:',
+            normalizeText(msg.mensagem || ''),
+          ].join('\n');
+          try {
+            const res = await runtime.repo.inserirEmailParaEnvio(
+              to,
+              assunto,
+              corpo,
+              cc,
+            );
+            if (!res.success)
+              ctx.log(
+                `[${r.cfg.sessionId}] espelho e-mail (offline) falhou: ${res.message}`,
+              );
+            else
+              ctx.log(
+                `[${r.cfg.sessionId}] espelho e-mail (offline) enfileirado para ${to} (cod=${msg.cod})`,
+              );
+          } catch (e: any) {
+            ctx.log(
+              `[${r.cfg.sessionId}] erro ao enfileirar e-mail espelho (offline): ${String(
+                e?.message || e,
+              )}`,
+            );
+          }
+          try {
+            await runtime.repo.setPrioridade(msg.cod, r.cfg.numOrigem);
+          } catch {}
+        }
+      }
+      // Try fallback session to send WhatsApp
+      const fallbackId = findFallbackSession(r.cfg.sessionId);
+      if (!fallbackId) {
+        await runtime.repo.finalizeQueueItem(
+          msg.cod,
+          'FALHA DE ENVIO (SEM SESSAO READY)',
+          r.cfg.numOrigem,
+        );
+        r.state = 'starting';
+        r.lastEvent = 'sem fallback READY';
+        return;
+      }
+      const ok = await sendMessageViaApi(
+        fallbackId,
+        msg.destino,
+        msg.mensagem,
+        msg.anexo || null,
+        false,
+        ctx,
+      );
+      await runtime.repo.finalizeQueueItem(
+        msg.cod,
+        ok ? '' : 'FALHA DE ENVIO',
+        r.cfg.numOrigem,
+      );
+      r.state = ok ? 'ready' : 'error';
+      r.lastEvent = ok
+        ? `fallback ok (via ${fallbackId}) cod=${msg.cod}`
+        : `fallback falha (via ${fallbackId}) cod=${msg.cod}`;
+      if (ok) r.sentToday++;
+      return;
+    } else {
+      r.state = 'starting';
+      r.lastEvent = 'aguardando READY';
+      return;
+    }
   }
   r.state = 'ready';
   if (!runtime?.repo) return;
@@ -558,6 +673,32 @@ async function tick(r: SessionRuntime, ctx: RobotContext) {
     ctx.log(
       `[${r.cfg.sessionId}] enviando fila cod=${msg.cod} destino=${msg.destino}`,
     );
+    // Espelha por e-mail para números configurados (ex.: 13)
+    if (shouldMirrorEmail(r.cfg.numOrigem)) {
+      const to = getEmailMirrorTo();
+      const cc = getEmailMirrorCc();
+      const assunto = `WhatsApp espelhado (num ${r.cfg.numOrigem}) - cod ${msg.cod}`;
+      const corpo = [
+        `Destino: ${msg.destino}`,
+        `Anexo(s): ${msg.anexo ? msg.anexo : 'nenhum'}`,
+        '',
+        'Mensagem:',
+        normalizeText(msg.mensagem || ''),
+      ].join('\n');
+      try {
+        const res = await runtime.repo.inserirEmailParaEnvio(to, assunto, corpo, cc);
+        if (!res.success) ctx.log(`[${r.cfg.sessionId}] espelho e-mail falhou: ${res.message}`);
+        else ctx.log(`[${r.cfg.sessionId}] espelho e-mail enfileirado para ${to} (cod=${msg.cod})`);
+      } catch (e: any) {
+        ctx.log(`[${r.cfg.sessionId}] erro ao enfileirar e-mail espelho: ${String(e?.message || e)}`);
+      }
+    }
+    // Marca PRIORIDADE apos enfileirar o espelho para evitar repeticao futura
+    if (shouldMirrorEmail(r.cfg.numOrigem)) {
+      try {
+        await runtime.repo.setPrioridade(msg.cod, r.cfg.numOrigem);
+      } catch {}
+    }
     const ok = await sendMessageViaApi(
       r.cfg.sessionId,
       msg.destino,
