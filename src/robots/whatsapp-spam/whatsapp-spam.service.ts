@@ -11,6 +11,13 @@ export type UpsertSessionDto = {
   sendNormal?: boolean;
 };
 
+export type TargetDto = {
+  chatId?: string;
+  target?: string; // alias para chatId, pode ser número puro ou JID
+  intervalMs?: number;
+  action?: 'upsert' | 'delete';
+};
+
 @Injectable()
 export class WhatsSpamService {
   constructor(private readonly db: DatabaseService) {}
@@ -117,25 +124,65 @@ export class WhatsSpamService {
     }));
   }
 
-  async upsertTarget(id: string, chatId: string, intervalMs?: number) {
+  async upsertTargets(
+    id: string,
+    body: TargetDto | TargetDto[] | { targets: TargetDto | TargetDto[] },
+  ) {
     this.ensureDb();
-    await this.db.execute(
-      `MERGE INTO UP_WHATS_FARM_TARGETS t
-       USING (SELECT :id SESSION_ID, :chat CHAT_ID FROM dual) s
-       ON (t.SESSION_ID=s.SESSION_ID AND t.CHAT_ID=s.CHAT_ID)
-       WHEN MATCHED THEN UPDATE SET INTERVAL_MS=:ms
-       WHEN NOT MATCHED THEN INSERT (SESSION_ID, CHAT_ID, INTERVAL_MS) VALUES (:id, :chat, :ms)`,
-      { id, chat: chatId, ms: intervalMs ?? 600000 },
-    );
-    return { ok: true };
+    const listRaw: TargetDto | TargetDto[] =
+      (body as any)?.targets !== undefined ? (body as any).targets : body;
+    const list = Array.isArray(listRaw) ? listRaw : [listRaw];
+
+    let upserted = 0;
+    let deleted = 0;
+    const skipped: string[] = [];
+
+    for (const t of list) {
+      if (!t) continue;
+      const chatId = String(t.chatId || t.target || '').trim();
+      if (!chatId) {
+        skipped.push('(vazio)');
+        continue;
+      }
+      const ms = t.intervalMs ?? 600000;
+      const action = (t.action || 'upsert').toLowerCase();
+
+      if (action === 'delete') {
+        await this.db.execute(
+          `DELETE FROM UP_WHATS_FARM_TARGETS WHERE SESSION_ID=:id AND CHAT_ID=:chat`,
+          { id, chat: chatId },
+        );
+        deleted++;
+        continue;
+      }
+
+      await this.db.execute(
+        `MERGE INTO UP_WHATS_FARM_TARGETS t
+         USING (SELECT :id SESSION_ID, :chat CHAT_ID FROM dual) s
+         ON (t.SESSION_ID=s.SESSION_ID AND t.CHAT_ID=s.CHAT_ID)
+         WHEN MATCHED THEN UPDATE SET INTERVAL_MS=:ms
+         WHEN NOT MATCHED THEN INSERT (SESSION_ID, CHAT_ID, INTERVAL_MS) VALUES (:id, :chat, :ms)`,
+        { id, chat: chatId, ms },
+      );
+      upserted++;
+    }
+
+    return { ok: true, upserted, deleted, skipped };
   }
 
-  async deleteTarget(id: string, chatId: string) {
+  async deleteTarget(id: string, chatId?: string) {
     this.ensureDb();
+    if (chatId) {
+      await this.db.execute(
+        `DELETE FROM UP_WHATS_FARM_TARGETS WHERE SESSION_ID=:id AND CHAT_ID=:chat`,
+        { id, chat: chatId },
+      );
+      return { ok: true, deleted: 'one' };
+    }
     await this.db.execute(
-      `DELETE FROM UP_WHATS_FARM_TARGETS WHERE SESSION_ID=:id AND CHAT_ID=:chat`,
-      { id, chat: chatId },
+      `DELETE FROM UP_WHATS_FARM_TARGETS WHERE SESSION_ID=:id`,
+      { id },
     );
-    return { ok: true };
+    return { ok: true, deleted: 'all' };
   }
 }

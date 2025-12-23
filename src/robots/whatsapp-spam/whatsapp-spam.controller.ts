@@ -7,7 +7,11 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
-import { WhatsSpamService, UpsertSessionDto } from './whatsapp-spam.service';
+import {
+  WhatsSpamService,
+  UpsertSessionDto,
+  TargetDto,
+} from './whatsapp-spam.service';
 
 @Controller('whatsapp-spam')
 export class WhatsSpamController {
@@ -39,15 +43,23 @@ export class WhatsSpamController {
   }
 
   @Post('sessions/:id/targets')
-  upsertTarget(
+  upsertTargets(
     @Param('id') id: string,
-    @Body() body: { chatId: string; intervalMs?: number },
+    @Body() body:
+      | TargetDto
+      | TargetDto[]
+      | { targets: TargetDto | TargetDto[] },
   ) {
-    return this.service.upsertTarget(id, body.chatId, body.intervalMs);
+    return this.service.upsertTargets(id, body);
   }
 
   @Delete('sessions/:id/targets/:chatId')
   delTarget(@Param('id') id: string, @Param('chatId') chatId: string) {
     return this.service.deleteTarget(id, chatId);
+  }
+
+  @Delete('sessions/:id/targets')
+  delAllTargets(@Param('id') id: string) {
+    return this.service.deleteTarget(id);
   }
 }

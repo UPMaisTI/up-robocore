@@ -638,12 +638,13 @@ async function tick(r: SessionRuntime, ctx: RobotContext) {
       ctx.log(
         `[${r.cfg.sessionId}] fazendinha para ${t.chatId} (len=${normalizeText(farmText).length})`,
       );
+      const treatAsChatId = t.chatId.includes('@');
       const ok = await sendMessageViaApi(
         r.cfg.sessionId,
         t.chatId,
         farmText,
         null,
-        true,
+        treatAsChatId,
         ctx,
       );
       r.lastEvent = ok
